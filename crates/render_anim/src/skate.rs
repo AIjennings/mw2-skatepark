@@ -1,5 +1,6 @@
 //! Local Skate gameplay adapter. Rendering and match ownership remain in IW4L.
 pub mod collision;
+pub mod park;
 pub mod rails;
 pub mod rig;
 use bevy::prelude::*;

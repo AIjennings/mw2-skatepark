@@ -1,5 +1,11 @@
 # 2010 Rust Rewrite Mashup
 
+> **MW2 Skatepark fork in progress.** This checkout is adding an in-game
+> skatepark editor and synchronized multiplayer skating. The park layout and
+> obstacle geometry are being built now; the editor and multiplayer skating
+> are not playable yet. See [the build plan](docs/SKATEPARK_EDITOR_PLAN.md)
+> and [the game-file setup guide](docs/GETTING_GAME_FILES.md).
+
 Modern Warfare 2, Skate 3 and Minecraft in one game, all running on
 [IW4L](https://github.com/vladtrc/iw4L), a from-scratch Rust rewrite of MW2.
 
