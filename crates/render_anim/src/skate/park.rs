@@ -1,4 +1,9 @@
 //! Versioned, asset-free skatepark layouts and their shared collision geometry.
+pub mod generator;
+pub mod mesh;
+pub use generator::{ContinuousStreamer, FlowStyle, ParkGenerator};
+pub use mesh::{SkateParkMesh, SkateParkVertex};
+
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -42,6 +47,27 @@ pub struct ParkGeometry {
     pub triangles: Vec<[Vec3; 3]>,
     /// Explicit grind paths in MW2 coordinates.
     pub rails: Vec<Vec<Vec3>>,
+}
+
+impl ParkGeometry {
+    /// Converts MW2-space geometry into Skate 3 physics coordinate space.
+    pub fn to_skate_triangles_and_rails(&self) -> (Vec<[[f32; 3]; 3]>, Vec<Vec<[f32; 3]>>) {
+        let triangles = self
+            .triangles
+            .iter()
+            .map(|t| t.map(|p| super::collision::to_skate(p).to_array()))
+            .collect();
+        let rails = self
+            .rails
+            .iter()
+            .map(|rail| {
+                rail.iter()
+                    .map(|p| super::collision::to_skate(*p).to_array())
+                    .collect()
+            })
+            .collect();
+        (triangles, rails)
+    }
 }
 
 impl ParkLayout {
@@ -182,7 +208,10 @@ impl Obstacle {
             [x1, y1, 0.0],
             [x1, y0, 0.0],
         );
-        if self.kind == ObstacleKind::Platform || self.kind == ObstacleKind::Bank {
+        if self.kind == ObstacleKind::Platform
+            || self.kind == ObstacleKind::Bank
+            || self.kind == ObstacleKind::QuarterPipe
+        {
             out.rails
                 .push(vec![self.point(x0, y1, h), self.point(x1, y1, h)]);
         }
@@ -252,5 +281,40 @@ mod tests {
         let parsed: ParkLayout = serde_json::from_str(&json).unwrap();
         parsed.validate().unwrap();
         assert_eq!(parsed.obstacles[0].kind, ObstacleKind::QuarterPipe);
+    }
+
+    #[test]
+    fn procedural_generator_builds_valid_flowing_park() {
+        let mut generator = ParkGenerator::new();
+        for style in [
+            FlowStyle::StreetPlaza,
+            FlowStyle::MegaRamp,
+            FlowStyle::FlowBowl,
+            FlowStyle::SnakeRun,
+        ] {
+            let layout = generator.generate_park("mp_rust", style, Vec3::ZERO);
+            assert!(layout.validate().is_ok());
+            let geom = layout.geometry().unwrap();
+            assert!(!geom.triangles.is_empty());
+            assert!(!geom.rails.is_empty());
+
+            let (skate_triangles, skate_rails) = geom.to_skate_triangles_and_rails();
+            assert_eq!(skate_triangles.len(), geom.triangles.len());
+            assert_eq!(skate_rails.len(), geom.rails.len());
+        }
+    }
+
+    #[test]
+    fn continuous_streamer_extends_ahead_and_prunes_behind() {
+        let mut streamer =
+            ContinuousStreamer::new("mp_terminal", Vec3::ZERO, 0.0, FlowStyle::StreetPlaza);
+        assert!(streamer.layout.validate().is_ok());
+        let initial_count = streamer.layout.obstacles.len();
+
+        // Skater moving forward along +Y at 500 units/s
+        let advanced = streamer.update(Vec3::new(0.0, 600.0, 0.0), Vec3::new(0.0, 500.0, 0.0));
+        assert!(advanced);
+        assert!(streamer.layout.validate().is_ok());
+        assert!(streamer.layout.obstacles.len() >= initial_count);
     }
 }

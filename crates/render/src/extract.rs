@@ -1039,3 +1039,26 @@ pub fn extract_minecraft_world(
         converted
     });
 }
+
+pub fn extract_skate_park(
+    main_world: Res<bevy::render::MainWorld>,
+    mut extracted: ResMut<render_gpu::ExtractedSkateParkMesh>,
+) {
+    let Some(mesh) = main_world.get_resource::<render_anim::skate::park::SkateParkMesh>() else {
+        return;
+    };
+    if mesh.revision != extracted.revision {
+        extracted.revision = mesh.revision;
+        extracted.vertices = mesh
+            .vertices
+            .iter()
+            .map(|v| render_gpu::SkateParkGpuVertex {
+                position: v.position,
+                normal: v.normal,
+                color: v.color,
+                uv: v.uv,
+            })
+            .collect();
+        extracted.indices = mesh.indices.clone();
+    }
+}

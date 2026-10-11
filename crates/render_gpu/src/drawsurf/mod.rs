@@ -24,9 +24,12 @@ mod shadowmap_sun_gpu;
 mod sm3_wgsl;
 mod smodel_cache_gpu;
 mod smodel_cached;
+mod skate_park;
 mod state;
 mod sun_effects;
 mod texture_table;
+
+pub use skate_park::{ExtractedSkateParkMesh, SkateParkGpuVertex};
 
 pub use admitted::AdmittedExactPort;
 pub use products::ExtractedRenderFrameProducts;

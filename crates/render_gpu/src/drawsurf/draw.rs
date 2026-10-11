@@ -34,4 +34,5 @@ pub(crate) fn register_drawsurf_render(app: &mut App) {
     super::minecraft_world::register(app);
     super::minecraft_light::register(app);
     super::geometry_diagnostic::register(app);
+    super::skate_park::register(app);
 }

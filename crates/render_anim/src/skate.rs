@@ -17,6 +17,7 @@ enum Reply {
     Ready,
     Activated(u64, Pose, u128),
     Pose(u64, Pose),
+    ParkMesh(u64, park::SkateParkMesh),
     Error(String),
 }
 #[derive(Resource, Default)]
@@ -37,6 +38,7 @@ struct Host {
 pub fn register(app: &mut App) {
     app.init_resource::<SkateMode>()
         .init_resource::<Host>()
+        .init_resource::<park::SkateParkMesh>()
         .add_systems(Startup, preload_assets)
         .add_systems(
             Update,
@@ -119,6 +121,23 @@ fn block_collision(
     Ok((builder.build(triangles, rails)?, n))
 }
 
+/// Builds Skate 3 collision from a `ParkLayout`. If base map triangles and rails
+/// are provided, they are merged so the player can skate both the underlying map
+/// and the generated obstacles.
+pub fn park_collision(
+    builder: &CollisionBuilder,
+    park: &park::ParkLayout,
+    base_triangles: &[[[f32; 3]; 3]],
+    base_rails: &[Vec<[f32; 3]>],
+) -> Result<(PreparedCollision, usize), String> {
+    let geom = park.geometry()?;
+    let (mut triangles, mut rails) = geom.to_skate_triangles_and_rails();
+    triangles.extend_from_slice(base_triangles);
+    rails.extend_from_slice(base_rails);
+    let n = triangles.len();
+    Ok((builder.build(triangles, rails)?, n))
+}
+
 /// One retained session per map. Leaving skating only pauses this worker;
 /// collision, decoded animation banks, graphs and the rig remain resident.
 fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result<(), String> {
@@ -136,6 +155,8 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
             let result = (|| -> Result<(), String> {
                 let start = std::time::Instant::now();
                 let world = collision::extract(&geometry);
+                let world_triangles = world.triangles.clone();
+                let world_rails = world.rails.clone();
                 let mut session = Session::new(
                     std::path::Path::new(&root),
                     world.triangles,
@@ -178,6 +199,8 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
                 let mut skater_at: Option<Vec3> = None;
                 let mut accumulated = 0.;
                 let mut epoch = 0;
+                let mut streamer: Option<park::generator::ContinuousStreamer> = None;
+                let mut stream_revision = 1u64;
                 while let Ok(job) = receive.recv() {
                     match job {
                         Job::Activate(new_epoch, spawn, yaw, aspect_ratio) => {
@@ -195,6 +218,26 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
                                     }
                                     Err(e) => diag::warn!(World, "Skate block collision: {e}"),
                                 }
+                                skater_at = Some(spawn);
+                            } else {
+                                stream_revision += 1;
+                                let skate_yaw = yaw + 90.0;
+                                let park_streamer = park::generator::ContinuousStreamer::new("skatepark", spawn, skate_yaw, park::generator::FlowStyle::StreetPlaza);
+                                match park_collision(&session.collision_builder(), &park_streamer.layout, &world_triangles, &world_rails) {
+                                    Ok((prepared, n)) => {
+                                        if let Err(e) = session.install_collision(prepared) {
+                                            diag::warn!(World, "Skate park install: {e}");
+                                        } else {
+                                            diag::info!(World, "Skate: procedural park active with {n} collision elements at spawn");
+                                        }
+                                    }
+                                    Err(e) => diag::warn!(World, "Skate park collision: {e}"),
+                                }
+                                if let Ok(geom) = park_streamer.layout.geometry() {
+                                    let mesh = geom.build_mesh(stream_revision);
+                                    let _ = publish.send(Reply::ParkMesh(epoch, mesh));
+                                }
+                                streamer = Some(park_streamer);
                                 skater_at = Some(spawn);
                             }
                             let p = session.activate(
@@ -260,7 +303,28 @@ fn preload_map(host: &mut Host, clip: Arc<asset_world::ClipCollision>) -> Result
                                 if !p.root.is_finite() || p.bones.iter().any(|b| !b.is_finite()) {
                                     return Err("Skate published a non-finite pose".into());
                                 }
-                                skater_at = Some(collision::from_skate(p.root.w_axis.truncate()));
+                                let new_at = collision::from_skate(p.root.w_axis.truncate());
+                                let vel = skater_at.map(|last| (new_at - last) / dt.max(0.001)).unwrap_or(Vec3::ZERO);
+                                skater_at = Some(new_at);
+                                if let Some(streamer) = streamer.as_mut() {
+                                    if streamer.update(new_at, vel) {
+                                        match park_collision(&session.collision_builder(), &streamer.layout, &world_triangles, &world_rails) {
+                                            Ok((prepared, n)) => {
+                                                if let Err(e) = session.install_collision(prepared) {
+                                                    diag::warn!(World, "Skate park stream update: {e}");
+                                                } else {
+                                                    diag::debug!(World, "Skate: streamed continuous park ahead ({} obstacles, {n} elements)", streamer.layout.obstacles.len());
+                                                }
+                                            }
+                                            Err(e) => diag::warn!(World, "Skate park collision stream: {e}"),
+                                        }
+                                        if let Ok(geom) = streamer.layout.geometry() {
+                                            stream_revision += 1;
+                                            let mesh = geom.build_mesh(stream_revision);
+                                            let _ = publish.send(Reply::ParkMesh(epoch, mesh));
+                                        }
+                                    }
+                                }
                                 if publish.send(Reply::Pose(epoch, p)).is_err() {
                                     break;
                                 }
@@ -309,15 +373,23 @@ fn present(mode: &mut SkateMode, p: Pose, authority: &mut net::AuthorityWorld) {
     mode.names = p.names;
     mode.tick = p.tick;
     mode.status = p.state;
-    mode.camera = p.camera.map(|(position, basis, fov)| {
-        (
-            Transform::from_translation(collision::from_skate(position)).looking_to(
-                b.transform_vector3(basis.z_axis).normalize(),
-                b.transform_vector3(basis.y_axis).normalize(),
-            ),
-            fov,
-        )
-    });
+    mode.camera = if std::env::var_os("IW4L_SKATE_FPV").is_some() {
+        // First-Person VR Skater Camera: head level (~58 inches above board)
+        let eye_pos = root.w_axis.truncate() + Vec3::new(0.0, 0.0, 58.0);
+        let fwd = root.transform_vector3(Vec3::Y).normalize();
+        let up = Vec3::Z;
+        Some((Transform::from_translation(eye_pos).looking_to(fwd, up), 85.0))
+    } else {
+        p.camera.map(|(position, basis, fov)| {
+            (
+                Transform::from_translation(collision::from_skate(position)).looking_to(
+                    b.transform_vector3(basis.z_axis).normalize(),
+                    b.transform_vector3(basis.y_axis).normalize(),
+                ),
+                fov,
+            )
+        })
+    };
     authority.0.set_origin(
         sim::ClientId(mode.client),
         root.w_axis.truncate().to_array(),
@@ -334,6 +406,7 @@ fn update(
     mut authority: Option<ResMut<net::AuthorityWorld>>,
     mut mode: ResMut<SkateMode>,
     mut host: ResMut<Host>,
+    mut park_mesh: ResMut<park::SkateParkMesh>,
     (gamepads, active): (Query<&bevy::input::gamepad::Gamepad>, Option<Res<frame::ActivePad>>),
 ) {
     let Some(authority) = authority.as_deref_mut() else {
@@ -424,6 +497,9 @@ fn update(
                     host.logged_tick = p.tick;
                 }
                 present(&mut mode, p, authority);
+            }
+            Reply::ParkMesh(epoch, mesh) if epoch == host.epoch => {
+                *park_mesh = mesh;
             }
             Reply::Error(e) => {
                 stop(&mut host, &mut mode, authority);

@@ -76,7 +76,7 @@ impl ItemPatch {
         });
         match (matches.next(), matches.next()) {
             (Some((index, _)), None) => Ok(Some(index)),
-            (None, None) if self.optional => Ok(None),
+            (None, None) if self.optional || self.index.is_some_and(|i| i >= menu.items.len()) => Ok(None),
             _ => Err(format!(
                 "Menu `{}` has no unique item matching name={:?}, index={:?}, dvar={:?}, text_key={:?}, item_type={:?}",
                 menu.name, self.name, self.index, self.dvar, self.text_key, self.item_type

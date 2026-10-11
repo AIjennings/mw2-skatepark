@@ -37,6 +37,6 @@ pub use drawsurf::{
 };
 pub use drawsurf::{
     MINECRAFT_VERTEX_BYTES, MinecraftAtlasImage, MinecraftClouds, MinecraftSectionUpload,
-    MinecraftWorldFrame,
+    MinecraftWorldFrame, ExtractedSkateParkMesh, SkateParkGpuVertex,
 };
 pub use plugin::RenderGpuPlugin;
